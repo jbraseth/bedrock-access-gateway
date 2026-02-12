@@ -467,6 +467,8 @@ class BedrockModel(BaseChatModel):
                 continue
             if not isinstance(message.content, str):
                 raise TypeError(f"System message content must be a string, got {type(message.content).__name__}")
+            if not message.content or not message.content.strip():
+                continue
             system_prompts.append({"text": message.content})
 
         if not system_prompts:
@@ -1166,6 +1168,8 @@ class BedrockModel(BaseChatModel):
         model_id: str,
     ) -> list[dict]:
         if isinstance(message.content, str):
+            if not message.content.strip():
+                return [{"text": " "}]
             return [
                 {
                     "text": message.content,
@@ -1174,6 +1178,8 @@ class BedrockModel(BaseChatModel):
         content_parts = []
         for part in message.content:
             if isinstance(part, TextContent):
+                if not part.text or not part.text.strip():
+                    continue
                 content_parts.append(
                     {
                         "text": part.text,
@@ -1211,7 +1217,7 @@ class BedrockModel(BaseChatModel):
         return {
             "toolSpec": {
                 "name": func.name,
-                "description": func.description,
+                "description": func.description if func.description else func.name,
                 "inputSchema": {
                     "json": func.parameters,
                 },
