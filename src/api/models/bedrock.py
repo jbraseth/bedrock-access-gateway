@@ -419,6 +419,8 @@ class BedrockModel(BaseChatModel):
             message_id = self.generate_message_id()
             stream = response.get("stream")
             self.think_emitted = False
+            self._tool_call_counter = 0
+            self._block_to_tool_index = {}
             async for chunk in self._async_iterate(stream):
                 args = {"model_id": chat_request.model, "message_id": message_id, "chunk": chunk}
                 stream_response = self._create_response_stream(**args)
@@ -439,7 +441,9 @@ class BedrockModel(BaseChatModel):
 
             # return an [DONE] message at the end.
             yield self.stream_response_to_bytes()
-            self.think_emitted = False  # Cleanup
+            self.think_emitted = False
+            self._tool_call_counter = 0
+            self._block_to_tool_index = {}
         except Exception as e:
             logger.error("Stream error for model %s: %s", chat_request.model, str(e))
             error_event = Error(error=ErrorMessage(message=str(e)))
@@ -1002,8 +1006,10 @@ class BedrockModel(BaseChatModel):
             # tool call start
             delta = chunk["contentBlockStart"]["start"]
             if "toolUse" in delta:
-                # first index is content
-                index = chunk["contentBlockStart"]["contentBlockIndex"] - 1
+                block_idx = chunk["contentBlockStart"]["contentBlockIndex"]
+                index = self._tool_call_counter
+                self._block_to_tool_index[block_idx] = index
+                self._tool_call_counter += 1
                 message = ChatResponseMessage(
                     tool_calls=[
                         ToolCall(
@@ -1045,7 +1051,8 @@ class BedrockModel(BaseChatModel):
                         return None  # Ignore signature if no <think> started
             else:
                 # tool use
-                index = chunk["contentBlockDelta"]["contentBlockIndex"] - 1
+                block_idx = chunk["contentBlockDelta"]["contentBlockIndex"]
+                index = self._block_to_tool_index.get(block_idx, 0)
                 message = ChatResponseMessage(
                     tool_calls=[
                         ToolCall(
