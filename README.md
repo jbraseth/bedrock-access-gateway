@@ -1,19 +1,46 @@
-# Bedrock Access Gateway
+# Bedrock Access Gateway - Custom Fixes
 
-OpenAI-compatible RESTful APIs for Amazon Bedrock
+Fork of [aws-samples/bedrock-access-gateway](https://github.com/aws-samples/bedrock-access-gateway) with fixes for OpenAI API compatibility.
 
-## What's New 🔥
+## Problem
 
-**API Gateway Response Streaming Support** - You can now deploy with Amazon API Gateway REST API instead of ALB, enabling true response streaming for better latency and cost optimization. See [Deployment Options](#deployment-options) for details.
+OpenAI-compatible clients (Codex, Continue, Cline, etc.) break when used with Bedrock Access Gateway due to bugs in how BAG translates between Bedrock's Converse API and the OpenAI streaming format. These bugs are [reported upstream](#fixes) but remain unpatched.
 
-**Latest Models Supported:**
-- **Claude 4.5 Family**: Opus 4.5, Sonnet 4.5, Haiku 4.5 - Anthropic's most intelligent models with enhanced coding and agent capabilities
-- **Amazon Nova**: Nova Micro, Nova Lite, Nova Pro, Nova Premier - Amazon's native foundation models with multimodal support
-- **DeepSeek**: DeepSeek-R1 (reasoning), DeepSeek-V3.1 - Advanced reasoning and general-purpose models
-- **Qwen 3**: Qwen3-32B, Qwen3-235B, Qwen3-Coder-30B, Qwen3-Coder-480B - Alibaba's latest language and coding models
-- **OpenAI OSS**: gpt-oss-20b, gpt-oss-120b - Open-source GPT models available via Bedrock
+**Empty content blocks** — Longer conversations and agent mode produce empty content arrays that Bedrock rejects:
+```
+HTTP 400: Bedrock validation error
+```
 
-It also supports reasoning for **Claude 4/4.5** (extended thinking and interleaved thinking) and **DeepSeek R1**. Check [How to Use](./docs/Usage.md#reasoning) for more details. You need to first run the Models API to refresh the model list.
+**Tool calls streaming index** — BAG returns `"index": -1` in streaming tool call responses instead of a valid 0-based integer, which violates the OpenAI spec and crashes clients:
+```
+[error] Item not found in turn state
+```
+
+## Fixes
+
+All fixes are based on upstream commit [`a150f7b`](https://github.com/aws-samples/bedrock-access-gateway/commit/a150f7b) (2026-02-13). We reference a commit hash because upstream does not publish releases or tags.
+
+| Fix | Tag | Upstream Issue | Description |
+|-----|-----|----------------|-------------|
+| Empty content blocks | `fix-empty-content` | [#167](https://github.com/aws-samples/bedrock-access-gateway/issues/167), [#214](https://github.com/aws-samples/bedrock-access-gateway/pull/214) | Bedrock rejects empty content arrays that some OpenAI clients send. This skips them. Also falls back to the tool name when a client sends an empty tool description. |
+| Tool calls streaming index | `fix-tool-index` | [#134](https://github.com/aws-samples/bedrock-access-gateway/issues/134), [#203](https://github.com/aws-samples/bedrock-access-gateway/issues/203) | BAG returns `"index": -1` in streaming `tool_calls` instead of `0`. The OpenAI spec requires a non-negative integer. This is what causes the "Item not found in turn state" error in the Codex extension. |
+| **All fixes combined** | **`all-fixes`** | | Both of the above. |
+
+## Deploy
+
+```bash
+git clone https://github.com/jbraseth/bedrock-access-gateway.git
+cd bedrock-access-gateway
+git checkout all-fixes    # or a specific fix tag
+```
+
+Then follow the deployment steps below.
+
+---
+
+# Upstream Documentation
+
+Everything below is from the original [aws-samples/bedrock-access-gateway](https://github.com/aws-samples/bedrock-access-gateway) README.
 
 ## Overview
 
@@ -21,8 +48,6 @@ Amazon Bedrock offers a wide range of foundation models (such as Claude 3 Opus/S
 etc.) and a broad set of capabilities for you to build generative AI applications. Check the [Amazon Bedrock](https://aws.amazon.com/bedrock) landing page for additional information.
 
 Sometimes, you might have applications developed using OpenAI APIs or SDKs, and you want to experiment with Amazon Bedrock without modifying your codebase. Or you may simply wish to evaluate the capabilities of these foundation models in tools like AutoGen etc. Well, this repository allows you to access Amazon Bedrock models seamlessly through OpenAI APIs and SDKs, enabling you to test these models without code changes.
-
-If you find this GitHub repository useful, please consider giving it a free star ⭐ to show your appreciation and support for the project.
 
 **Features:**
 
@@ -33,29 +58,20 @@ If you find this GitHub repository useful, please consider giving it a free star
 - [x] Support Embedding API
 - [x] Support Multimodal API
 - [x] Support Cross-Region Inference
-- [x] Support Application Inference Profiles (**new**)
-- [x] Support Reasoning (**new**)
-- [x] Support Interleaved thinking (**new**)
-- [x] Support Prompt Caching (**new**)
+- [x] Support Application Inference Profiles
+- [x] Support Reasoning
+- [x] Support Interleaved thinking
+- [x] Support Prompt Caching
 
 Please check [Usage Guide](./docs/Usage.md) for more details about how to use the new APIs.
-
 
 ## Get Started
 
 ### Prerequisites
 
-Please make sure you have met below prerequisites:
-
 - Access to Amazon Bedrock foundation models.
 
 > For more information on how to request model access, please refer to the [Amazon Bedrock User Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) (Set Up > Model access)
-
-### Architecture
-
-The following diagram illustrates the reference architecture. It uses [Amazon API Gateway response streaming](https://aws.amazon.com/blogs/compute/building-responsive-apis-with-amazon-api-gateway-response-streaming/) with Lambda for SSE support.
-
-![Architecture](assets/arch.png)
 
 ### Deployment Options
 
@@ -64,100 +80,48 @@ The following diagram illustrates the reference architecture. It uses [Amazon AP
 | **API Gateway + Lambda** | No VPC required, pay-per-request, native streaming support, lower operational overhead | Potential cold starts | Most use cases, cost-sensitive deployments |
 | **ALB + Fargate** | Lowest streaming latency, no cold starts | Higher cost, requires VPC | High-throughput, latency-sensitive workloads |
 
-You can also use Lambda Function URL as an alternative, see [example](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming)
-
 ### Deployment
 
-Please follow the steps below to deploy the Bedrock Proxy APIs into your AWS account. Only supports regions where Amazon Bedrock is available (such as `us-west-2`). The deployment will take approximately **10-15 minutes** 🕒.
-
-**Step 1: Create your own API key in Secrets Manager (MUST)**
-
-> **Note:** This step is to use any string (without spaces) you like to create a custom API Key (credential) that will be used to access the proxy API later. This key does not have to match your actual OpenAI key, and you don't need to have an OpenAI API key. please keep the key safe and private.
+**Step 1: Create your own API key in Secrets Manager**
 
 1. Open the AWS Management Console and navigate to the AWS Secrets Manager service.
 2. Click on "Store a new secret" button.
 3. In the "Choose secret type" page, select:
+   - Secret type: Other type of secret
+   - Key/value pairs: Key: `api_key`, Value: Enter your API key value
+4. Secret name: Enter a name (e.g., "BedrockProxyAPIKey")
+5. Click "Next", review, and click "Store"
 
-   Secret type: Other type of secret
-   Key/value pairs:
-   - Key: api_key
-   - Value: Enter your API key value
-
-   Click "Next"
-4. In the "Configure secret" page:
-   Secret name: Enter a name (e.g., "BedrockProxyAPIKey")
-   Description: (Optional) Add a description of your secret
-5. Click "Next" and review all your settings and click "Store"
-
-After creation, you'll see your secret in the Secrets Manager console. Make note of the secret ARN.
+After creation, make note of the secret ARN.
 
 **Step 2: Build and push container images to ECR**
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/aws-samples/bedrock-access-gateway.git
-   cd bedrock-access-gateway
-   ```
+```bash
+cd scripts
+bash ./push-to-ecr.sh
+```
 
-2. Run the build and push script:
-   ```bash
-   cd scripts
-   bash ./push-to-ecr.sh
-   ```
-
-3. Follow the prompts to configure:
-   - ECR repository names (or use defaults)
-   - Image tag (or use default: `latest`)
-   - AWS region (or use default: `us-east-1`)
-
-4. The script will build and push both Lambda and ECS/Fargate images to your ECR repositories.
-
-5. **Important**: Copy the image URIs displayed at the end of the script output. You'll need these in the next step.
+Follow the prompts to configure ECR repository names, image tag, and AWS region. Copy the image URIs displayed at the end.
 
 **Step 3: Deploy the CloudFormation stack**
 
-1. Download the CloudFormation template you want to use:
+1. Download the CloudFormation template:
    - For API Gateway + Lambda: [`deployment/BedrockProxy.template`](deployment/BedrockProxy.template)
    - For ALB + Fargate: [`deployment/BedrockProxyFargate.template`](deployment/BedrockProxyFargate.template)
+2. Navigate to CloudFormation in your target region.
+3. Click "Create stack" > "With new resources (standard)".
+4. Upload the template and provide:
+   - **ApiKeySecretArn**: The secret ARN from Step 1
+   - **ContainerImageUri**: The ECR image URI from Step 2
+5. Acknowledge IAM resource creation and submit.
 
-2. Sign in to AWS Management Console and navigate to the CloudFormation service in your target region.
-
-3. Click "Create stack" → "With new resources (standard)".
-
-4. Upload the template file you downloaded.
-
-5. On the "Specify stack details" page, provide the following information:
-   - **Stack name**: Enter a stack name (e.g., "BedrockProxyAPI")
-   - **ApiKeySecretArn**: Enter the secret ARN from Step 1
-   - **ContainerImageUri**: Enter the ECR image URI from Step 2 output
-   - **DefaultModelId**: (Optional) Change the default model if needed
-
-   Click "Next".
-
-6. On the "Configure stack options" page, you can leave the default settings or customize them according to your needs. Click "Next".
-
-7. On the "Review" page, review all details. Check the "I acknowledge that AWS CloudFormation might create IAM resources" checkbox at the bottom. Click "Submit".
-
-That is it! 🎉 Once deployed, click the CloudFormation stack and go to **Outputs** tab, you can find the API Base URL from `APIBaseUrl`, the value should look like `http://xxxx.xxx.elb.amazonaws.com/api/v1`.
-
-### Troubleshooting
-
-If you encounter any issues, please check the [Troubleshooting Guide](./docs/Troubleshooting.md) for more details.
+Once deployed, find the API Base URL in the CloudFormation stack **Outputs** tab (`APIBaseUrl`).
 
 ### SDK/API Usage
-
-All you need is the API Key and the API Base URL. If you didn't set up your own key following Step 1, the application will fail to start with an error message indicating that the API Key is not configured.
-
-Now, you can try out the proxy APIs. Let's say you want to test Claude 3 Sonnet model (model ID: `anthropic.claude-3-sonnet-20240229-v1:0`)...
-
-**Example API Usage**
 
 ```bash
 export OPENAI_API_KEY=<API key>
 export OPENAI_BASE_URL=<API base url>
-# For older versions
-# https://github.com/openai/openai-python/issues/624
-export OPENAI_API_BASE=<API base url>
 ```
 
 ```bash
@@ -166,16 +130,9 @@ curl $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{
     "model": "anthropic.claude-3-sonnet-20240229-v1:0",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Hello!"
-      }
-    ]
+    "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
-
-**Example SDK Usage**
 
 ```python
 from openai import OpenAI
@@ -185,214 +142,21 @@ completion = client.chat.completions.create(
     model="anthropic.claude-3-sonnet-20240229-v1:0",
     messages=[{"role": "user", "content": "Hello!"}],
 )
-
 print(completion.choices[0].message.content)
 ```
 
-Please check [Usage Guide](./docs/Usage.md) for more details about how to use embedding API, multimodal API and tool call.
-
-### Application Inference Profiles
-
-This proxy now supports **Application Inference Profiles**, which allow you to track usage and costs for your model invocations. You can use application inference profiles created in your AWS account for cost tracking and monitoring purposes.
-
-**Using Application Inference Profiles:**
+### Running Locally
 
 ```bash
-# Use an application inference profile ARN as the model ID
-curl $OPENAI_BASE_URL/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -d '{
-    "model": "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/your-profile-id",
-    "messages": [
-      {
-        "role": "user",
-        "content": "Hello!"
-      }
-    ]
-  }'
-```
-
-**SDK Usage with Application Inference Profiles:**
-
-```python
-from openai import OpenAI
-
-client = OpenAI()
-completion = client.chat.completions.create(
-    model="arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/your-profile-id",
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-
-print(completion.choices[0].message.content)
-```
-
-**Benefits of Application Inference Profiles:**
-- **Cost Tracking**: Track usage and costs for specific applications or use cases
-- **Usage Monitoring**: Monitor model invocation metrics through CloudWatch
-- **Tag-based Cost Allocation**: Use AWS cost allocation tags for detailed billing analysis
-
-For more information about creating and managing application inference profiles, see the [Amazon Bedrock User Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html).
-
-### Prompt Caching
-
-This proxy now supports **Prompt Caching** for Claude and Nova models, which can reduce costs by up to 90% and latency by up to 85% for workloads with repeated prompts.
-
-**Supported Models:**
-- Claude models (Claude 3.5 Haiku, Claude 4, Claude 4.5, etc.)
-- Nova models (Nova Micro, Nova Lite, Nova Pro, Nova Premier)
-
-**Enabling Prompt Caching:**
-
-You can enable prompt caching in two ways:
-
-1. **Globally via Environment Variable** (set in ECS Task Definition or Lambda):
-```bash
-ENABLE_PROMPT_CACHING=true
-```
-
-2. **Per-request via `extra_body`** :
-
-**Python SDK:**
-```python
-from openai import OpenAI
-
-client = OpenAI()
-
-# Cache system prompts
-response = client.chat.completions.create(
-    model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    messages=[
-        {"role": "system", "content": "You are an expert assistant with knowledge of..."},
-        {"role": "user", "content": "Help me with this task"}
-    ],
-    extra_body={
-        "prompt_caching": {"system": True}
-    }
-)
-
-# Check cache hit
-if response.usage.prompt_tokens_details:
-    cached_tokens = response.usage.prompt_tokens_details.cached_tokens
-    print(f"Cached tokens: {cached_tokens}")
-```
-
-**cURL:**
-```bash
-curl $OPENAI_BASE_URL/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -d '{
-    "model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "messages": [
-      {"role": "system", "content": "Long system prompt..."},
-      {"role": "user", "content": "Question"}
-    ],
-    "extra_body": {
-      "prompt_caching": {"system": true}
-    }
-  }'
-```
-
-**Cache Options:**
-- `"prompt_caching": {"system": true}` - Cache system prompts
-- `"prompt_caching": {"messages": true}` - Cache user messages
-- `"prompt_caching": {"system": true, "messages": true}` - Cache both
-
-**Requirements:**
-- Prompt must be ≥1,024 tokens to enable caching
-- Cache TTL is 5 minutes (resets on each cache hit)
-- Nova models have a 20,000 token caching limit
-
-For more information, see the [Amazon Bedrock Prompt Caching Guide](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
-
-## Other Examples
-
-### LangChain
-
-Make sure you use `ChatOpenAI(...)` instead of `OpenAI(...)`
-
-```python
-# pip install langchain-openai
-import os
-
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-from langchain_openai import ChatOpenAI
-
-chat = ChatOpenAI(
-    model="anthropic.claude-3-sonnet-20240229-v1:0",
-    temperature=0,
-    openai_api_key=os.environ['OPENAI_API_KEY'],
-    openai_api_base=os.environ['OPENAI_BASE_URL'],
-)
-
-template = """Question: {question}
-
-Answer: Let's think step by step."""
-
-prompt = PromptTemplate.from_template(template)
-llm_chain = LLMChain(prompt=prompt, llm=chat)
-
-question = "What NFL team won the Super Bowl in the year Justin Beiber was born?"
-response = llm_chain.invoke(question)
-print(response)
-
-```
-
-## FAQs
-
-### About Privacy
-
-This application does not collect any of your data. Furthermore, it does not log any requests or responses by default.
-
-### Why choose API Gateway vs ALB?
-
-**API Gateway + Lambda** uses [API Gateway response streaming](https://aws.amazon.com/blogs/compute/building-responsive-apis-with-amazon-api-gateway-response-streaming/) with [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter) to support SSE streaming without requiring a VPC. This is a cost-effective, serverless option with up to 10 minutes timeout.
-
-**ALB + Fargate** provides the lowest streaming latency with no cold starts, ideal for high-throughput workloads.
-
-### Which regions are supported?
-
-Generally speaking, all regions that Amazon Bedrock supports will also be supported, if not, please raise an issue in Github.
-
-Note that not all models are available in those regions.
-
-### Which models are supported?
-
-You can use the [Models API](./docs/Usage.md#models-api) to get/refresh a list of supported models in the current region.
-
-### Can I run this locally
-
-Yes, you can run this locally, e.g. run below command under `src` folder:
-
-```bash
+cd src
 uvicorn api.app:app --host 0.0.0.0 --port 8000
 ```
 
-The API base url should look like `http://localhost:8000/api/v1`.
+The API base url will be `http://localhost:8000/api/v1`.
 
-### Any performance sacrifice or latency increase by using the proxy APIs
+### Troubleshooting
 
-Compared with direct AWS SDK calls, the proxy architecture will add some latency. The default API Gateway + Lambda deployment provides good streaming performance with Lambda response streaming.
-
-For lowest latency on streaming responses, consider the ALB + Fargate deployment option which eliminates cold starts and provides consistent performance.
-
-### Any plan to support SageMaker models?
-
-Currently, there is no plan to support SageMaker models. This may change provided there's a demand from customers.
-
-### Any plan to support Bedrock custom models?
-
-Fine-tuned models and models with Provisioned Throughput are currently not supported. You can clone the repo and make the customization if needed.
-
-### How to upgrade?
-
-To use the latest features, you need follow the deployment guide to redeploy the application. You can upgrade the existing CloudFormation stack to get the latest changes.
-
-## Security
-
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+See the [Troubleshooting Guide](./docs/Troubleshooting.md).
 
 ## License
 
